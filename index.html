@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>タクシー記録アプリ</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; font-family: sans-serif; overflow: hidden; }
+  #map { width: 100%; height: 100%; }
+
+  #header {
+    position: fixed; top: 0; left: 0; right: 0; height: 50px;
+    background: #2c3e50; color: white; display: flex;
+    align-items: center; justify-content: space-between;
+    padding: 0 10px; z-index: 1000; font-size: 16px;
+  }
+  #header button {
+    background: none; border: none; color: white; font-size: 22px; cursor: pointer;
+  }
+
+  #timeFilterBar {
+    position: fixed; top: 50px; left: 0; right: 0; height: 40px;
+    background: #ecf0f1; display: flex; align-items: center; justify-content: center;
+    gap: 6px; z-index: 999; font-size: 13px;
+  }
+  #timeFilterBar select { padding: 2px; }
+
+  #recordBtn {
+    position: fixed; bottom: 20px; right: 20px;
+    width: 64px; height: 64px; border-radius: 50%;
+    background: #e74c3c; color: white; font-size: 30px;
+    border: none; z-index: 1000; box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+  }
+
+  #modeToggle {
+    position: fixed; bottom: 20px; left: 20px;
+    width: 56px; height: 56px; border-radius: 50%;
+    background: #3498db; color: white; font-size: 12px;
+    border: none; z-index: 1000; box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+  }
+  #modeToggle.active { background: #f39c12; }
+
+  .overlay {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5); z-index: 2000;
+    align-items: center; justify-content: center;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: white; border-radius: 10px; padding: 20px;
+    width: 85%; max-width: 320px;
+  }
+  .modal h2 { margin-bottom: 15px; font-size: 18px; }
+  .modal label { display: block; margin-top: 10px; font-size: 14px; }
+  .modal select, .modal input {
+    width: 100%; padding: 8px; margin-top: 4px; font-size: 14px;
+  }
+  .modal .btnRow { display: flex; gap: 10px; margin-top: 20px; }
+  .modal .btnRow button {
+    flex: 1; padding: 10px; font-size: 14px; border: none; border-radius: 6px;
+  }
+  .btnSave { background: #27ae60; color: white; }
+  .btnCancel { background: #bdc3c7; }
+
+  .divIconLabel {
+    font-size: 16px; text-align: center; line-height: 1;
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <span>🚕 タクシー記録</span>
+  <button id="settingsBtn">⚙️</button>
+</div>
+
+<div id="timeFilterBar">
+  開始<select id="startHour"></select>時
+  〜
+  終了<select id="endHour"></select>時
+  <button id="applyFilterBtn" style="padding:4px 8px;">適用</button>
+  <button id="clearFilterBtn" style="padding:4px 8px;">全表示</button>
+</div>
+
+<div id="map"></div>
+
+<button id="recordBtn">＋</button>
+<button id="modeToggle">通常</button>
+
+<!-- 記録入力モーダル -->
+<div class="overlay" id="recordOverlay">
+  <div class="modal">
+    <h2>乗車を記録</h2>
+    <label>乗り方</label>
+    <select id="inputMode">
+      <option value="すぐ">すぐ（緑）</option>
+      <option value="普通">普通（黄）</option>
+      <option value="おそい">おそい（赤）</option>
+    </select>
+    <label>きっかけ</label>
+    <select id="inputTrigger">
+      <option value="手上げ">手上げ ✋</option>
+      <option value="GO">GO 📱</option>
+      <option value="無線">無線 📶</option>
+    </select>
+    <label>料金（円）</label>
+    <input type="number" id="inputFare" placeholder="例: 1500">
+    <div class="btnRow">
+      <button class="btnCancel" id="cancelRecordBtn">キャンセル</button>
+      <button class="btnSave" id="saveRecordBtn">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 設定モーダル -->
+<div class="overlay" id="settingsOverlay">
+  <div class="modal">
+    <h2>設定</h2>
+    <label>境界1（円未満は三角）</label>
+    <input type="number" id="setBoundary1">
+    <label>境界2（円未満は丸、以上は二重丸）</label>
+    <input type="number" id="setBoundary2">
+    <label>迎車料金（円）</label>
+    <input type="number" id="setPickupFee">
+    <div class="btnRow">
+      <button class="btnCancel" id="cancelSettingsBtn">キャンセル</button>
+      <button class="btnSave" id="saveSettingsBtn">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  // ---------- データ管理 ----------
+  const RECORDS_KEY = 'taxi_records';
+  const SETTINGS_KEY = 'taxi_settings';
+
+  function loadRecords() {
+    return JSON.parse(localStorage.getItem(RECORDS_KEY) || '[]');
+  }
+  function saveRecords(records) {
+    localStorage.setItem(RECORDS_KEY, JSON.stringify(records));
+  }
+  function loadSettings() {
+    const def = { boundary1: 2000, boundary2: 4000, pickupFee: 500 };
+    return Object.assign(def, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'));
+  }
+  function saveSettings(settings) {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  }
+
+  let records = loadRecords();
+  let settings = loadSettings();
+  let fareMode = false; // 通常モード / 金額確認モード
+  let filterRange = null; // {start, end} or null
+
+  // ---------- 地図初期化 ----------
+  const map = L.map('map').setView([35.681236, 139.767125], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  let currentMarkers = [];
+
+  const triggerIcon = { '手上げ': '✋', 'GO': '📱', '無線': '📶' };
+  const modeColor = { 'すぐ': '#2ecc71', '普通': '#f1c40f', 'おそい': '#e74c3c' };
+
+  function classifyFare(record) {
+    const fare = record.trigger === '手上げ'
+      ? record.fare
+      : record.fare - settings.pickupFee;
+    if (fare < settings.boundary1) return 'triangle';
+    if (fare < settings.boundary2) return 'circle';
+    return 'doublecircle';
+  }
+
+  function makeIcon(record) {
+    const icon = triggerIcon[record.trigger] || '?';
+    if (!fareMode) {
+      const color = modeColor[record.mode] || '#999';
+      return L.divIcon({
+        className: '',
+        html: `<div style="background:${color};width:30px;height:30px;border-radius:50%;
+                display:flex;align-items:center;justify-content:center;border:2px solid white;
+                box-shadow:0 1px 3px rgba(0,0,0,0.5);">
+                <span class="divIconLabel">${icon}</span></div>`,
+        iconSize: [30, 30],
+        iconAnchor: [15, 15]
+      });
+    } else {
+      const shape = classifyFare(record);
+      let shapeHtml = '';
+      if (shape === 'triangle') {
+        shapeHtml = `<div style="width:0;height:0;border-left:15px solid transparent;
+          border-right:15px solid transparent;border-bottom:26px solid #3498db;
+          display:flex;align-items:flex-end;justify-content:center;">
+          <span style="color:white;font-size:12px;margin-bottom:2px;">${icon}</span></div>`;
+      } else if (shape === 'circle') {
+        shapeHtml = `<div style="width:30px;height:30px;border-radius:50%;background:#3498db;
+          display:flex;align-items:center;justify-content:center;border:2px solid white;">
+          <span class="divIconLabel">${icon}</span></div>`;
+      } else {
+        shapeHtml = `<div style="width:34px;height:34px;border-radius:50%;background:#3498db;
+          display:flex;align-items:center;justify-content:center;border:3px double white;">
+          <span class="divIconLabel">${icon}</span></div>`;
+      }
+      return L.divIcon({ className: '', html: shapeHtml, iconSize: [34, 34], iconAnchor: [17, 17] });
+    }
+  }
+
+  function renderMarkers() {
+    currentMarkers.forEach(m => map.removeLayer(m));
+    currentMarkers = [];
+
+    let filtered = records;
+    if (filterRange) {
+      filtered = records.filter(r => {
+        const hour = new Date(r.datetime).getHours();
+        if (filterRange.start <= filterRange.end) {
+          return hour >= filterRange.start && hour <= filterRange.end;
+        } else {
+          return hour >= filterRange.start || hour <= filterRange.end;
+        }
+      });
+    }
+
+    filtered.forEach(record => {
+      const marker = L.marker([record.lat, record.lng], { icon: makeIcon(record) });
+      const dt = new Date(record.datetime);
+      const dtStr = dt.toLocaleString('ja-JP');
+      marker.bindPopup(
+        `<b>${record.mode} / ${record.trigger}</b><br>
+         料金: ${record.fare}円<br>
+         日時: ${dtStr}`
+      );
+      marker.addTo(map);
+      currentMarkers.push(marker);
+    });
+  }
+
+  // ---------- 時間帯フィルター用セレクト初期化 ----------
+  const startHourSel = document.getElementById('startHour');
+  const endHourSel = document.getElementById('endHour');
+  for (let h = 0; h < 24; h++) {
+    const opt1 = document.createElement('option');
+    opt1.value = h; opt1.textContent = h;
+    startHourSel.appendChild(opt1);
+    const opt2 = document.createElement('option');
+    opt2.value = h; opt2.textContent = h;
+    endHourSel.appendChild(opt2);
+  }
+  startHourSel.value = 0;
+  endHourSel.value = 23;
+
+  document.getElementById('applyFilterBtn').addEventListener('click', () => {
+    filterRange = {
+      start: parseInt(startHourSel.value),
+      end: parseInt(endHourSel.value)
+    };
+    renderMarkers();
+  });
+  document.getElementById('clearFilterBtn').addEventListener('click', () => {
+    filterRange = null;
+    renderMarkers();
+  });
+
+  // ---------- モード切替 ----------
+  const modeToggleBtn = document.getElementById('modeToggle');
+  modeToggleBtn.addEventListener('click', () => {
+    fareMode = !fareMode;
+    modeToggleBtn.textContent = fareMode ? '金額' : '通常';
+    modeToggleBtn.classList.toggle('active', fareMode);
+    renderMarkers();
+  });
+
+  // ---------- 現在地取得 ----------
+  let pendingLocation = null;
+
+  document.getElementById('recordBtn').addEventListener('click', () => {
+    if (!navigator.geolocation) {
+      alert('この端末は位置情報取得に対応していません');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        pendingLocation = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude
+        };
+        document.getElementById('recordOverlay').classList.add('show');
+      },
+      err => {
+        alert('位置情報の取得に失敗しました: ' + err.message);
+      },
+      { enableHighAccuracy: true }
+    );
+  });
+
+  document.getElementById('cancelRecordBtn').addEventListener('click', () => {
+    document.getElementById('recordOverlay').classList.remove('show');
+  });
+
+  document.getElementById('saveRecordBtn').addEventListener('click', () => {
+    const mode = document.getElementById('inputMode').value;
+    const trigger = document.getElementById('inputTrigger').value;
+    const fareVal = parseInt(document.getElementById('inputFare').value);
+
+    if (isNaN(fareVal)) {
+      alert('料金を入力してください');
+      return;
+    }
+    if (!pendingLocation) {
+      alert('位置情報が取得できていません');
+      return;
+    }
+
+    const record = {
+      id: Date.now(),
+      lat: pendingLocation.lat,
+      lng: pendingLocation.lng,
+      mode: mode,
+      trigger: trigger,
+      fare: fareVal,
+      datetime: new Date().toISOString()
+    };
+    records.push(record);
+    saveRecords(records);
+
+    document.getElementById('inputFare').value = '';
+    document.getElementById('recordOverlay').classList.remove('show');
+    renderMarkers();
+
+    map.setView([record.lat, record.lng], map.getZoom());
+  });
+
+  // ---------- 設定画面 ----------
+  document.getElementById('settingsBtn').addEventListener('click', () => {
+    document.getElementById('setBoundary1').value = settings.boundary1;
+    document.getElementById('setBoundary2').value = settings.boundary2;
+    document.getElementById('setPickupFee').value = settings.pickupFee;
+    document.getElementById('settingsOverlay').classList.add('show');
+  });
+
+  document.getElementById('cancelSettingsBtn').addEventListener('click', () => {
+    document.getElementById('settingsOverlay').classList.remove('show');
+  });
+
+  document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+    const b1 = parseInt(document.getElementById('setBoundary1').value);
+    const b2 = parseInt(document.getElementById('setBoundary2').value);
+    const pf = parseInt(document.getElementById('setPickupFee').value);
+
+    if (isNaN(b1) || isNaN(b2) || isNaN(pf)) {
+      alert('すべての項目に数字を入力してください');
+      return;
+    }
+    settings = { boundary1: b1, boundary2: b2, pickupFee: pf };
+    saveSettings(settings);
+    document.getElementById('settingsOverlay').classList.remove('show');
+    renderMarkers();
+  });
+
+  // ---------- 初期表示 ----------
+  renderMarkers();
+
+  // ---------- 現在地を初期表示に反映（任意） ----------
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        map.setView([pos.coords.latitude, pos.coords.longitude], 15);
+      },
+      () => { /* 失敗しても東京駅のままでOK */ }
+    );
+  }
+</script>
+</body>
+</html>

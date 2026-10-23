@@ -1,1 +1,365 @@
-# taxi-app
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>タクシー記録アプリ</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html, body { margin:0; padding:0; height:100%; font-family: sans-serif; }
+  #map { position:absolute; top:0; bottom:0; width:100%; }
+  .btn {
+    position:absolute; z-index:1000; width:50px;height:50px;border-radius:50%;
+    background:#fff; border:none; box-shadow:0 2px 6px rgba(0,0,0,0.3);
+    font-size:24px; display:flex; align-items:center; justify-content:center; cursor:pointer;
+  }
+  #btnLocate { bottom:180px; right:15px; }
+  #btnAdd { bottom:110px; right:15px; background:#2196F3; color:#fff; }
+  #btnFilter { bottom:250px; right:15px; }
+  #btnSettings { bottom:320px; right:15px; }
+  #btnAmountMode { bottom:110px; left:15px; }
+  #crosshair {
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-100%);
+    font-size:40px; z-index:999; display:none; pointer-events:none;
+  }
+  #addPanel {
+    position:absolute; bottom:0; left:0; right:0; background:#fff; z-index:1001;
+    display:none; padding:15px; box-shadow:0 -2px 10px rgba(0,0,0,0.2);
+    border-radius:15px 15px 0 0;
+  }
+  .modal-overlay {
+    position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.5);
+    z-index:2000; display:none; align-items:center; justify-content:center;
+  }
+  .modal-box {
+    background:#fff; border-radius:12px; padding:20px; width:85%; max-width:350px;
+    max-height:80vh; overflow-y:auto;
+  }
+  .modal-box h3 { margin-top:0; }
+  .modal-box label { display:block; margin-top:12px; font-size:14px; color:#333; }
+  .modal-box select, .modal-box input {
+    width:100%; padding:8px; margin-top:4px; font-size:16px; box-sizing:border-box;
+    border:1px solid #ccc; border-radius:6px;
+  }
+  .choice-group { display:flex; gap:8px; margin-top:4px; }
+  .choice-btn {
+    flex:1; padding:10px; border:2px solid #ccc; border-radius:8px; text-align:center;
+    cursor:pointer; background:#f5f5f5; font-size:14px;
+  }
+  .choice-btn.selected { border-color:#2196F3; background:#e3f2fd; font-weight:bold; }
+  .modal-actions { display:flex; gap:10px; margin-top:20px; }
+  .modal-actions button {
+    flex:1; padding:12px; border:none; border-radius:8px; font-size:16px; cursor:pointer;
+  }
+  .btn-save { background:#2196F3; color:#fff; }
+  .btn-cancel { background:#ccc; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="crosshair">📍</div>
+
+<button id="btnLocate" class="btn" title="現在地へ移動">🎯</button>
+<button id="btnFilter" class="btn" title="時間帯フィルター">🕒</button>
+<button id="btnSettings" class="btn" title="設定">⚙️</button>
+<button id="btnAdd" class="btn" title="記録を追加">➕</button>
+<button id="btnAmountMode" class="btn" title="金額確認モード">🔘</button>
+
+<div id="addPanel">
+  <p style="text-align:center; margin:0 0 10px;">地図を動かして記録したい場所に合わせてください</p>
+  <div style="display:flex; gap:10px;">
+    <button id="btnConfirmLocation" style="flex:1;background:#4CAF50;color:#fff;border:none;border-radius:8px;padding:12px;">✅ ここに記録</button>
+    <button id="btnCancelAdd" style="flex:1;background:#ccc;border:none;border-radius:8px;padding:12px;">✖ キャンセル</button>
+  </div>
+</div>
+
+<div id="recordModal" class="modal-overlay">
+  <div class="modal-box">
+    <h3>乗車記録の入力</h3>
+    <label>乗り方</label>
+    <div class="choice-group" id="norikataGroup">
+      <div class="choice-btn" data-value="すぐ">🟢 すぐ</div>
+      <div class="choice-btn" data-value="普通">🟡 普通</div>
+      <div class="choice-btn" data-value="おそい">🔴 おそい</div>
+    </div>
+    <label>きっかけ</label>
+    <div class="choice-group" id="kikkakeGroup">
+      <div class="choice-btn" data-value="手上げ">✋ 手上げ</div>
+      <div class="choice-btn" data-value="GO">📱 GO</div>
+      <div class="choice-btn" data-value="無線">📻 無線</div>
+    </div>
+    <label>料金（円）</label>
+    <input type="number" id="inputRyoukin" placeholder="例: 1500">
+    <label>日時</label>
+    <input type="datetime-local" id="inputDateTime">
+    <div class="modal-actions">
+      <button class="btn-save" id="btnSaveRecord">保存</button>
+      <button class="btn-cancel" id="btnCancelRecord">キャンセル</button>
+    </div>
+  </div>
+</div>
+
+<div id="settingsModal" class="modal-overlay">
+  <div class="modal-box">
+    <h3>設定</h3>
+    <label>三角／丸の境界金額（円）</label>
+    <input type="number" id="settingBoundary1">
+    <label>丸／二重丸の境界金額（円）</label>
+    <input type="number" id="settingBoundary2">
+    <label>迎車料金（円）</label>
+    <input type="number" id="settingPickupFee">
+    <div class="modal-actions">
+      <button class="btn-save" id="btnSaveSettings">保存</button>
+      <button class="btn-cancel" id="btnCancelSettings">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<div id="filterModal" class="modal-overlay">
+  <div class="modal-box">
+    <h3>表示する時間帯</h3>
+    <label>開始時刻</label>
+    <select id="filterStart"></select>
+    <label>終了時刻</label>
+    <select id="filterEnd"></select>
+    <div class="modal-actions">
+      <button class="btn-save" id="btnApplyFilter">適用</button>
+      <button class="btn-cancel" id="btnClearFilter">解除</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const DEFAULT_SETTINGS = { boundary1: 2000, boundary2: 4000, pickupFee: 500 };
+let settings = JSON.parse(localStorage.getItem('taxi_settings')) || DEFAULT_SETTINGS;
+let records = JSON.parse(localStorage.getItem('taxi_records')) || [];
+
+let mode = 'normal';
+let filterRange = null;
+
+const map = L.map('map').setView([35.681236, 139.767125], 16);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+let markersLayer = L.layerGroup().addTo(map);
+
+let currentLocationMarker = null;
+let currentAccuracyCircle = null;
+
+function startWatchingLocation() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.watchPosition(onLocationUpdate, onLocationError, {
+    enableHighAccuracy: true, maximumAge: 1000, timeout: 10000
+  });
+}
+
+let firstFix = true;
+function onLocationUpdate(pos) {
+  const { latitude, longitude, accuracy } = pos.coords;
+  const latlng = [latitude, longitude];
+
+  if (!currentLocationMarker) {
+    currentLocationMarker = L.circleMarker(latlng, {
+      radius: 8, color: '#fff', weight: 2, fillColor: '#2196F3', fillOpacity: 1
+    }).addTo(map);
+    currentAccuracyCircle = L.circle(latlng, {
+      radius: accuracy, color: '#2196F3', fillColor: '#2196F3', fillOpacity: 0.15, weight: 1
+    }).addTo(map);
+  } else {
+    currentLocationMarker.setLatLng(latlng);
+    currentAccuracyCircle.setLatLng(latlng);
+    currentAccuracyCircle.setRadius(accuracy);
+  }
+
+  if (firstFix) {
+    map.setView(latlng, 17);
+    firstFix = false;
+  }
+}
+function onLocationError(err) { console.error('位置情報エラー:', err); }
+startWatchingLocation();
+
+document.getElementById('btnLocate').addEventListener('click', () => {
+  if (currentLocationMarker) map.setView(currentLocationMarker.getLatLng(), 17);
+  else alert('現在地を取得中です。少し待ってから再度お試しください。');
+});
+
+const crosshair = document.getElementById('crosshair');
+const addPanel = document.getElementById('addPanel');
+let pendingLatLng = null;
+
+document.getElementById('btnAdd').addEventListener('click', () => {
+  crosshair.style.display = 'block';
+  addPanel.style.display = 'block';
+});
+document.getElementById('btnCancelAdd').addEventListener('click', () => {
+  crosshair.style.display = 'none';
+  addPanel.style.display = 'none';
+});
+document.getElementById('btnConfirmLocation').addEventListener('click', () => {
+  const center = map.getCenter();
+  pendingLatLng = { lat: center.lat, lng: center.lng };
+  crosshair.style.display = 'none';
+  addPanel.style.display = 'none';
+  openRecordModal();
+});
+
+const recordModal = document.getElementById('recordModal');
+let selectedNorikata = null;
+let selectedKikkake = null;
+
+document.querySelectorAll('#norikataGroup .choice-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#norikataGroup .choice-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    selectedNorikata = btn.dataset.value;
+  });
+});
+document.querySelectorAll('#kikkakeGroup .choice-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#kikkakeGroup .choice-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    selectedKikkake = btn.dataset.value;
+  });
+});
+
+function openRecordModal() {
+  selectedNorikata = null;
+  selectedKikkake = null;
+  document.querySelectorAll('.choice-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById('inputRyoukin').value = '';
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  document.getElementById('inputDateTime').value = now.toISOString().slice(0,16);
+  recordModal.style.display = 'flex';
+}
+
+document.getElementById('btnCancelRecord').addEventListener('click', () => {
+  recordModal.style.display = 'none';
+  pendingLatLng = null;
+});
+
+document.getElementById('btnSaveRecord').addEventListener('click', () => {
+  if (!selectedNorikata || !selectedKikkake) { alert('乗り方ときっかけを選択してください'); return; }
+  const ryoukin = parseInt(document.getElementById('inputRyoukin').value, 10);
+  if (isNaN(ryoukin) || ryoukin < 0) { alert('料金を正しく入力してください'); return; }
+  const dateTimeValue = document.getElementById('inputDateTime').value;
+  if (!dateTimeValue) { alert('日時を入力してください'); return; }
+
+  records.push({
+    id: Date.now().toString() + Math.random().toString(36).slice(2,8),
+    lat: pendingLatLng.lat, lng: pendingLatLng.lng,
+    time: new Date(dateTimeValue).toISOString(),
+    norikata: selectedNorikata, kikkake: selectedKikkake, ryoukin: ryoukin
+  });
+  saveRecords();
+  renderMarkers();
+  recordModal.style.display = 'none';
+  pendingLatLng = null;
+});
+
+function saveRecords() { localStorage.setItem('taxi_records', JSON.stringify(records)); }
+function saveSettings() { localStorage.setItem('taxi_settings', JSON.stringify(settings)); }
+
+const COLOR_MAP = { 'すぐ': '#4CAF50', '普通': '#FFC107', 'おそい': '#F44336' };
+const ICON_MAP = { '手上げ': '✋', 'GO': '📱', '無線': '📻' };
+
+function getClassificationAmount(record) {
+  if (record.kikkake === '手上げ') return record.ryoukin;
+  return record.ryoukin - settings.pickupFee;
+}
+function getShapeSymbol(amount) {
+  if (amount < settings.boundary1) return '▲';
+  if (amount < settings.boundary2) return '●';
+  return '◎';
+}
+function createDivIcon(record) {
+  let html;
+  if (mode === 'normal') {
+    const color = COLOR_MAP[record.norikata] || '#999';
+    const icon = ICON_MAP[record.kikkake] || '?';
+    html = `<div style="background:${color};width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);">${icon}</div>`;
+  } else {
+    const amount = getClassificationAmount(record);
+    const symbol = getShapeSymbol(amount);
+    html = `<div style="background:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:bold;border:2px solid #333;box-shadow:0 1px 4px rgba(0,0,0,0.4);">${symbol}</div>`;
+  }
+  return L.divIcon({ html, className: '', iconSize: [32,32], iconAnchor: [16,16] });
+}
+
+function passesFilter(record) {
+  if (!filterRange) return true;
+  const hour = new Date(record.time).getHours();
+  const { start, end } = filterRange;
+  if (start <= end) return hour >= start && hour <= end;
+  return hour >= start || hour <= end;
+}
+
+function renderMarkers() {
+  markersLayer.clearLayers();
+  records.filter(passesFilter).forEach(record => {
+    const marker = L.marker([record.lat, record.lng], { icon: createDivIcon(record) });
+    marker.on('click', () => {
+      const dateStr = new Date(record.time).toLocaleString('ja-JP');
+      const msg = `このピンを削除しますか？\n\n日時: ${dateStr}\n乗り方: ${record.norikata}\nきっかけ: ${record.kikkake}\n料金: ${record.ryoukin}円`;
+      if (confirm(msg)) deleteRecord(record.id);
+    });
+    marker.addTo(markersLayer);
+  });
+}
+function deleteRecord(id) {
+  records = records.filter(r => r.id !== id);
+  saveRecords();
+  renderMarkers();
+}
+renderMarkers();
+
+document.getElementById('btnAmountMode').addEventListener('click', () => {
+  mode = (mode === 'normal') ? 'amount' : 'normal';
+  document.getElementById('btnAmountMode').textContent = (mode === 'normal') ? '🔘' : '💰';
+  renderMarkers();
+});
+
+const settingsModal = document.getElementById('settingsModal');
+document.getElementById('btnSettings').addEventListener('click', () => {
+  document.getElementById('settingBoundary1').value = settings.boundary1;
+  document.getElementById('settingBoundary2').value = settings.boundary2;
+  document.getElementById('settingPickupFee').value = settings.pickupFee;
+  settingsModal.style.display = 'flex';
+});
+document.getElementById('btnCancelSettings').addEventListener('click', () => { settingsModal.style.display = 'none'; });
+document.getElementById('btnSaveSettings').addEventListener('click', () => {
+  const b1 = parseInt(document.getElementById('settingBoundary1').value, 10);
+  const b2 = parseInt(document.getElementById('settingBoundary2').value, 10);
+  const fee = parseInt(document.getElementById('settingPickupFee').value, 10);
+  if (isNaN(b1) || isNaN(b2) || isNaN(fee) || b1 >= b2) { alert('境界金額・迎車料金を正しく入力してください（境界1 < 境界2）'); return; }
+  settings = { boundary1: b1, boundary2: b2, pickupFee: fee };
+  saveSettings();
+  settingsModal.style.display = 'none';
+  renderMarkers();
+});
+
+const filterModal = document.getElementById('filterModal');
+const filterStartSelect = document.getElementById('filterStart');
+const filterEndSelect = document.getElementById('filterEnd');
+for (let h = 0; h < 24; h++) {
+  filterStartSelect.innerHTML += `<option value="${h}">${h}時</option>`;
+  filterEndSelect.innerHTML += `<option value="${h}">${h}時</option>`;
+}
+document.getElementById('btnFilter').addEventListener('click', () => { filterModal.style.display = 'flex'; });
+document.getElementById('btnApplyFilter').addEventListener('click', () => {
+  filterRange = { start: parseInt(filterStartSelect.value, 10), end: parseInt(filterEndSelect.value, 10) };
+  filterModal.style.display = 'none';
+  renderMarkers();
+});
+document.getElementById('btnClearFilter').addEventListener('click', () => {
+  filterRange = null;
+  filterModal.style.display = 'none';
+  renderMarkers();
+});
+</script>
+</body>
+</html>
